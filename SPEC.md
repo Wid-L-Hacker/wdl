@@ -143,6 +143,7 @@ Revisions to this specification are made periodically in order to correct errors
       - [Reserved Workflow Hints](#reserved-workflow-hints)
         - [`allow_nested_inputs`](#allow_nested_inputs)
     - [Call Statement](#call-statement)
+      - [Optional Call Statement](#optional-call-statement)
       - [Computing Call Inputs](#computing-call-inputs)
     - [Scatter Statement](#scatter-statement)
     - [Conditional Statement](#conditional-statement)
@@ -7259,6 +7260,90 @@ Example output:
 {
   "copy_input.greeting": "Hello Billy",
   "copy_input.msg": "Hello Billy, nice to meet you!"
+}
+```
+</p>
+</details>
+
+#### Optional Call Statement
+
+✨ A workflow can tolerate the failure of a single call. Write `call?` instead of `call` to make an *optional call*:
+
+```
+call? my_task { x = 1 }
+call? my_task as other after first { x = 2 }
+```
+
+An optional call has the same form as a [`call`](#call-statement). It can use a fully-qualified name, an `as` alias, `after` clauses, and an input body. The callee can be a task or a workflow.
+
+The outputs of an optional call are optional in the calling workflow. If a callee output has type `T`, then the call output has type `T?`. If a callee output already has an optional type, then its type does not change. Code that uses the call outputs must handle the optional types, for example with [`select_first`](#select_first), [`select_all`](#select_all), or [`defined`](#defined).
+
+If the callee succeeds, then the call outputs hold the callee's output values, as for `call`.
+
+If the callee fails, then the enclosing workflow does not fail. Every call output is set to `None`. All outputs are set to `None`. A failed optional call never produces a partial set of output values.
+
+Here, the callee "fails" when its execution fails. For a task, the execution fails if the engine cannot stage its input files, cannot start the task, or cannot complete it, or if its command exits with a failure status. For a workflow, the execution fails if a task within it fails to execute, in this sense, and that failure ends the workflow. Errors in expressions are not execution failures. An error in a call input expression, an error in a callee output expression, or an error in any other expression still fails the enclosing workflow. An invalid call input, such as a missing required input, also still fails the enclosing workflow.
+
+For a callee output that is not optional, `None` has one meaning: the callee failed. For a callee output that is already optional, `None` has two possible meanings: the callee failed, or the callee succeeded and produced `None`. The value alone cannot distinguish these cases. If the distinction matters, then call an adapter workflow instead of the task. The adapter calls the task, copies its outputs, and adds one non-optional output, such as `Boolean ok = true`. Under `call?`, that output is `None` exactly when the callee failed.
+
+An optional call can also appear in a [`scatter`](#scatter-statement) body. Each shard is independent. If the callee fails for one shard, then that shard's call outputs are set to `None`, and the other shards continue. The gathered array for a callee output of type `T` has type `Array[T?]`, with `None` at each failed position.
+
+<details>
+<summary>
+Example: optional_call.wdl
+
+```wdl
+version 1.4
+
+task analyze {
+  input {
+    File sample
+  }
+
+  command <<<
+    python analyze.py ~{sample} > report.txt
+  >>>
+
+  output {
+    File report = "report.txt"
+  }
+}
+
+workflow analyze_cohort {
+  input {
+    Array[File] samples
+  }
+
+  # The analyze task fails for some samples, e.g. corrupt input.
+  # The call? tolerates each failure, and the workflow completes.
+  scatter (sample in samples) {
+    call? analyze { sample = sample }
+  }
+
+  output {
+    # One entry per sample; None where the call failed.
+    Array[File?] reports = analyze.report
+    # Only the successful reports.
+    Array[File] completed = select_all(analyze.report)
+  }
+}
+```
+</summary>
+<p>
+Example input:
+
+```json
+{
+  "analyze_cohort.samples": ["a.txt", "b.txt", "c.txt"]
+}
+```
+
+Example output:
+
+```json
+{
+  "analyze_cohort.reports": ["report.txt", null, "report.txt"],
+  "analyze_cohort.completed": ["report.txt", "report.txt"]
 }
 ```
 </p>
